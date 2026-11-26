@@ -2,10 +2,16 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
 
+function Lamp({ lamp, valid }) {
+  if (!lamp) return <span className="lamp lamp-off">未放行</span>
+  if (valid) return <span className="lamp lamp-on">已放行 · 成立</span>
+  return <span className="lamp lamp-fake">已放行 · 缺口未清</span>
+}
+
 export default function ReleaseDetail() {
   const { id } = useParams()
   const [d, setD] = useState(null)
-  const [audits, setAudits] = useState([])
+  const [envs, setEnvs] = useState([])
   const [err, setErr] = useState('')
   const [msg, setMsg] = useState('')
   const [target, setTarget] = useState('预')
@@ -14,11 +20,12 @@ export default function ReleaseDetail() {
   const load = useCallback(async () => {
     setErr('')
     try {
-      const detail = await api(`/发版单/${id}`)
+      const [detail, envRows] = await Promise.all([
+        api(`/发版单/${id}`),
+        api('/环境').catch(() => []),
+      ])
       setD(detail)
-      const qs = new URLSearchParams({ 关联编号: String(id) }).toString()
-      const au = await api(`/审计?${qs}`)
-      setAudits(au)
+      setEnvs(envRows || [])
     } catch (e) { setErr(e.message) }
   }, [id])
 
@@ -41,6 +48,11 @@ export default function ReleaseDetail() {
 
   const canPromote = ['已入闸', '晋升中'].includes(d.状态)
   const canAdmit = d.状态 === '待入闸'
+  const lamp = d.已放行灯 || { 亮: d.状态 === '已放行', 成立: false, 证据: {} }
+  const ev = lamp.证据 || {}
+  const chain = d.环境链 || []
+  const envOrder = envs.length ? envs.map((e) => e.代号) : Array.from(new Set([d.基线环境, ...chain, d.当前环境, d.重放环境].filter(Boolean)))
+  const audits = d.审计 || []
 
   return (
     <div className="panel">
@@ -60,20 +72,65 @@ export default function ReleaseDetail() {
         <div className={`stat ${d.一致 ? '' : 'stat-bad'}`}>
           <div className="n">{d.一致 ? '一致' : `差额 ${d.差额}`}</div><div className="l">真源/事件/名册</div>
         </div>
+        <div className={`stat ${lamp.亮 ? (lamp.成立 ? 'stat-ok' : 'stat-bad') : ''}`}>
+          <div className="n"><Lamp lamp={lamp.亮} valid={lamp.成立} /></div>
+          <div className="l">已放行灯（单态∪事件∪对账∪审计）</div>
+        </div>
       </div>
 
-      <table className="kv">
-        <tbody>
-          <tr><th>应用</th><td>{d.应用}（{d.负责人}）</td><th>流水线</th><td>{d.流水线}</td></tr>
-          <tr><th>制品摘要</th><td>{d.制品摘要 || '-'}</td><th>金丝雀比例</th><td>{d.金丝雀比例}%</td></tr>
-          <tr><th>申请时间</th><td>{d.申请时间}</td><th>入闸时间</th><td>{d.入闸时间 || '-'}</td></tr>
-          <tr><th>状态机推进戳</th><td>{d.状态机推进戳 || '-'}</td><th>放行时间</th><td>{d.放行时间 || '-'}</td></tr>
-        </tbody>
-      </table>
+      <h3>已放行灯 × 事件环境链 · 同屏对照</h3>
+      <div className="crossread">
+        <div className="crossread-col">
+          <h4>单态（状态机）</h4>
+          <div className="crossread-line">状态：<b>{d.状态}</b></div>
+          <div className="crossread-line">当前环境：<b>{d.当前环境 || '-'}</b></div>
+          <div className="crossread-line">推进戳：{d.状态机推进戳 || '-'}</div>
+          <div className="crossread-line">状态版本：{d.state_rev ?? d.状态版本}</div>
+        </div>
+        <div className="crossread-col">
+          <h4>晋升事件流 · 环境链</h4>
+          <div className="chain">
+            {envOrder.map((code, i) => {
+              const reached = chain.includes(code)
+              const isTruth = d.当前环境 === code
+              const isReplay = d.重放环境 === code
+              return (
+                <React.Fragment key={code}>
+                  {i > 0 && <span className="chain-arrow">→</span>}
+                  <span className={`chain-env ${reached ? 'reached' : ''} ${isTruth ? 'truth' : ''} ${isReplay ? 'replay' : ''}`}>
+                    {code}
+                    {isTruth && <em>单态</em>}
+                    {isReplay && <em>重放</em>}
+                  </span>
+                </React.Fragment>
+              )
+            })}
+          </div>
+          <div className="crossread-line">事件序号：{(d.事件序号 || []).join(',') || '-'}（{d.序号连续 ? '连续' : '断号'}）</div>
+          <div className="crossread-line">重放环境：<b>{d.重放环境 || '-'}</b>（重放状态 {d.重放状态 || '-'}）</div>
+        </div>
+        <div className="crossread-col">
+          <h4>名册旁读（跨环）</h4>
+          <div className="crossread-line">名册@{d.当前环境 || '-'}：<b>{d.名册版本 || '空'}</b>（目标 {d.目标版本}）</div>
+          <div className="chain">
+            {(d.名册旁读 || []).map((r) => (
+              <span key={r.环境} className={`chain-env ${r.环境 === d.当前环境 ? 'truth' : ''}`}>
+                {r.环境}·{r.版本 || '空'}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="crossread-col">
+          <h4>审计腿</h4>
+          <div className="crossread-line">放行证据：{d.审计放行证据 ? <span className="badge ok">有</span> : <span className="badge warn">无</span>}</div>
+          <div className="crossread-line">本单审计 {audits.length} 条（见下表）</div>
+          <div className="crossread-line">灯判定：{lamp.亮 ? (lamp.成立 ? '四证同指，成立' : '证据未同指，钉缺口') : '未点亮'}</div>
+        </div>
+      </div>
 
-      {!d.一致 && (
+      {d.缺口未清 && (
         <div className="diff-box">
-          <h3>对账差异（{d.差额}）</h3>
+          <h3>缺口（{d.差额}）· 假已放行钉住，纠回或整笔退</h3>
           <ul>
             {(d.差异 || []).map((x, i) => (
               <li key={i}><span className="badge bad">{x.类型}</span> {x.说明}</li>
@@ -85,6 +142,15 @@ export default function ReleaseDetail() {
           )}>缺事件纠偏 / 一键纠偏</button>
         </div>
       )}
+
+      <table className="kv">
+        <tbody>
+          <tr><th>应用</th><td>{d.应用}（{d.负责人}）</td><th>流水线</th><td>{d.流水线}</td></tr>
+          <tr><th>制品摘要</th><td>{d.制品摘要 || '-'}</td><th>金丝雀比例</th><td>{d.金丝雀比例}%</td></tr>
+          <tr><th>申请时间</th><td>{d.申请时间}</td><th>入闸时间</th><td>{d.入闸时间 || '-'}</td></tr>
+          <tr><th>状态机推进戳</th><td>{d.状态机推进戳 || '-'}</td><th>放行时间</th><td>{d.放行时间 || '-'}</td></tr>
+        </tbody>
+      </table>
 
       <h3>操作（晋升入口）</h3>
       <div className="row">
@@ -144,6 +210,23 @@ export default function ReleaseDetail() {
         </table>
       </div>
 
+      <h3>挂接实例（挂接行）</h3>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>环境</th><th>版本</th><th>健康</th><th>更新时间</th></tr></thead>
+          <tbody>
+            {(d.挂接实例 || []).map((x) => (
+              <tr key={x.编号}>
+                <td>{x.环境}（{x.环境名}）</td><td>{x.版本}</td>
+                <td>{x.健康 === '探针绿' ? <span className="badge ok">{x.健康}</span> : <span className="badge bad">{x.健康}</span>}</td>
+                <td>{x.更新时间}</td>
+              </tr>
+            ))}
+            {(d.挂接实例 || []).length === 0 && <tr><td colSpan="4" className="muted">暂无实例挂接到本单</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
       <h3>本单审计</h3>
       <div className="table-wrap">
         <table>
@@ -152,6 +235,7 @@ export default function ReleaseDetail() {
             {audits.map((a) => (
               <tr key={a.编号}><td>{a.时间}</td><td>{a.类别}</td><td>{a.动作}</td><td>{a.备注}</td></tr>
             ))}
+            {audits.length === 0 && <tr><td colSpan="4" className="muted">暂无审计记录</td></tr>}
           </tbody>
         </table>
       </div>

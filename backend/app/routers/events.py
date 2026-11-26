@@ -2,7 +2,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from app.db import db
-from app.services.truth import event_chain_view
+from app.services.truth import build_reconcile, event_chain_view
 
 router = APIRouter(tags=["晋升事件"])
 
@@ -40,6 +40,42 @@ def list_events(
 ):
     rid = 发版单编号 if 发版单编号 is not None else release_id
     return _list(rid, 含作废 or all)
+
+
+@router.get("/晋升事件/对照")
+def events_cross_read():
+    """晋升事件流环境链 × 单态 × 已放行灯 对照：每单一行，缺口钉在链上。"""
+    with db() as conn:
+        report = build_reconcile(conn)
+        rows = []
+        for d in report["对账明细"]:
+            rows.append({
+                "编号": d["编号"],
+                "发版单号": d["发版单号"],
+                "应用": d.get("应用"),
+                "状态": d["真源状态"],
+                "真源环境": d["真源环境"],
+                "重放环境": d["重放环境"],
+                "环境链": d["环境链"],
+                "事件数": d["事件数"],
+                "事件序号": d["事件序号"],
+                "序号连续": d["序号连续"],
+                "名册版本": d["名册版本"],
+                "目标版本": d.get("目标版本"),
+                "已放行灯": d["已放行灯"]["亮"],
+                "放行成立": d["放行成立"],
+                "假已放行": d["假已放行"],
+                "缺口未清": d["缺口未清"],
+                "缺口类型": d["缺口类型"],
+                "差额": d["差额"],
+            })
+        return {
+            "真源": "发版单状态机",
+            "对照": rows,
+            "行": rows,
+            "缺口数": sum(1 for r in rows if r["缺口未清"]),
+            "缺口未清": any(r["缺口未清"] for r in rows),
+        }
 
 
 @router.get("/发版单/{release_id}/事件")

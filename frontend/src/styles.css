@@ -310,3 +310,71 @@ table.kv td { width: 32%; }
 .audit-filters label { display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; }
 label.check { flex-direction: row !important; align-items: center; gap: .4rem; }
 .roster-ver { font-weight: 700; }
+
+/* ===== 已放行灯 × 事件环境链 同屏对照 ===== */
+.lamp {
+  display: inline-block;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.lamp-on { background: rgba(42,143,110,.18); color: var(--ok); }
+.lamp-fake {
+  background: rgba(192,57,43,.16);
+  color: var(--danger);
+  animation: lamp-blink 1.6s ease-in-out infinite;
+}
+.lamp-off { background: #e2e5ea; color: var(--muted); }
+@keyframes lamp-blink {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(192,57,43,.35); }
+  50% { box-shadow: 0 0 0 5px rgba(192,57,43,0); }
+}
+
+.crossread {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+}
+.crossread-col {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--steel);
+  padding: 0.65rem 0.8rem;
+}
+.crossread-col h4 {
+  margin: 0 0 0.45rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+}
+.crossread-line { font-size: 0.9rem; margin: 0.22rem 0; }
+.audit-crossread { border: 1px dashed var(--line); padding: 0.5rem; background: #fbfcfd; }
+
+.chain { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin: 0.35rem 0; }
+.chain-env {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.18rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #eef1f5;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.chain-env.reached { background: rgba(52,120,200,.12); color: #1f5fae; border-color: rgba(52,120,200,.4); }
+.chain-env.truth { border: 2px solid var(--ok); color: var(--ok); background: rgba(42,143,110,.1); }
+.chain-env.replay { box-shadow: 0 0 0 2px rgba(214,137,16,.45) inset; }
+.chain-env em {
+  font-style: normal;
+  font-size: 0.68rem;
+  font-weight: 400;
+  background: rgba(20,23,28,.08);
+  border-radius: 999px;
+  padding: 0 0.35rem;
+}
+.chain-arrow { color: var(--steel); font-weight: 700; }

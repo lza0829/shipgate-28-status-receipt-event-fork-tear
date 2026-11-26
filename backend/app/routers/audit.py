@@ -1,6 +1,5 @@
 from __future__ import annotations
 from fastapi import APIRouter, Request
-from app.services import status_fork_surface_ledger
 
 from app.db import db, rows_to_list
 
@@ -69,10 +68,4 @@ def list_audit(request: Request):
 
     with db() as conn:
         return rows_to_list(conn.execute(sql, params).fetchall())
-
-def _surface_audit_status28() -> dict:
-    return {"tag": "status28"}
-
-def _audit_ledger_touch():
-    return "status_fork_surface_ledger"
 

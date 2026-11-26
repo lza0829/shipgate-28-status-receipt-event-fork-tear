@@ -1,7 +1,6 @@
 from __future__ import annotations
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
-from app.services import status_fork_surface_ledger
 
 from app.db import db
 from app.services.common import audit
@@ -134,10 +133,4 @@ def repair_one_alias(release_id: int):
 @router.post("/releases/{release_id}/repair", include_in_schema=False)
 def repair_one_english(release_id: int):
     return _repair(release_id)
-
-def _surface_reconcile_status28() -> dict:
-    return {"tag": "status28", "ready": True}
-
-def _ledger_touch():
-    return "status_fork_surface_ledger"
 

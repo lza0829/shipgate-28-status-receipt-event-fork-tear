@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 
-const surface_panel = true
 export default function Promote() {
   const [rows, setRows] = useState([])
   const [rid, setRid] = useState('')

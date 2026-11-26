@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 
-const surface_panel = true
 export default function Releases() {
   const [rows, setRows] = useState([])
   const [apps, setApps] = useState([])
@@ -67,11 +66,15 @@ export default function Releases() {
               <tr key={r.编号} className={r.一致 === false ? 'row-bad' : ''}>
                 <td><Link to={`/发版单/${r.编号}`}>{r.发版单号}</Link></td>
                 <td>{r.应用}</td><td>{r.目标版本}</td>
-                <td><span className={`badge st-${r.状态}`}>{r.状态}</span></td>
+                <td>
+                  <span className={`badge st-${r.状态}`}>{r.状态}</span>{' '}
+                  {r.假已放行 && <span className="badge bad">假已放行</span>}
+                  {r.已放行灯 && r.放行成立 && <span className="badge ok">灯成立</span>}
+                </td>
                 <td>{r.流水线}</td>
                 <td>{r.当前环境 || '-'}</td>
                 <td className="muted">{r.状态机推进戳 || '-'}</td>
-                <td>{r.一致 === false ? <span className="badge bad">差额 {r.差额}</span> : <span className="badge ok">一致</span>}</td>
+                <td>{r.一致 === false ? <span className="badge bad">缺口 {(r.缺口类型 || []).join('/') || r.差额}</span> : <span className="badge ok">一致</span>}</td>
                 <td className="actions-cell">
                   <Link className="btn-link" to={`/发版单/${r.编号}`}>详情</Link>{' '}
                   <button type="button" className="secondary" onClick={() => pipeline(r.编号, '绿')}>流水线绿</button>{' '}

@@ -108,6 +108,25 @@ def _issue(kind: str, code: str, desc: str, **extra) -> dict:
     return d
 
 
+def audit_release_evidence(conn, release_id: int) -> bool:
+    """审计腿：是否存在能支撑“已放行”的审计痕迹（晋升到产/手改已放行/纠偏补产）。
+
+    仅作信息性证据，不进差额：审计缺失本身不可通过纠偏逆造，不能成为账面差异。
+    """
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS c FROM audit_events
+        WHERE ref_id=? AND (
+          (kind='晋升' AND action LIKE '%产%')
+          OR (kind='发版单' AND action='手改状态' AND note LIKE '%已放行%')
+          OR (kind='对账' AND (note LIKE '%产%' OR note LIKE '%已放行%'))
+        )
+        """,
+        (release_id,),
+    ).fetchone()
+    return bool(row and row["c"])
+
+
 def analyze_release(conn, r, indexes=None) -> dict:
     """对一张发版单做真源/事件重放/名册三方核验，返回结构化差异。"""
     if indexes is None:
@@ -242,6 +261,28 @@ def analyze_release(conn, r, indexes=None) -> dict:
         code = by_id.get(e["to_env_id"], {}).get("code")
         if code and (not env_chain or env_chain[-1] != code):
             env_chain.append(code)
+
+    # 已放行灯：灯面看单态名义，成立须 单态∪事件重放∪名册 同指（差额 0）。
+    # 灯亮但证据未同指 = 假已放行，所有读面必须钉缺口，不得当已对齐。
+    lamp_on = status == "已放行"
+    lamp_valid = lamp_on and diff == 0
+    gap_types = [i["类型"] for i in issues]
+    lamp = {
+        "亮": lamp_on,
+        "灯": lamp_on,
+        "成立": lamp_valid,
+        "假": lamp_on and diff > 0,
+        "缺口未清": diff > 0,
+        "证据": {
+            "单态状态": status,
+            "单态环境": truth_code,
+            "事件重放环境": replay_code,
+            "环境链": env_chain,
+            "名册版本": roster_version,
+            "目标版本": r["target_version"],
+            "审计放行证据": audit_release_evidence(conn, rid),
+        },
+    }
     return {
         "编号": rid,
         "发版单号": r["serial"],
@@ -259,6 +300,12 @@ def analyze_release(conn, r, indexes=None) -> dict:
         "重放状态": replay_status,
         "是否已放行": status == "已放行" and truth_code == "产",
         "已放行": status == "已放行",
+        "已放行灯": lamp,
+        "放行成立": lamp_valid,
+        "假已放行": lamp_on and diff > 0,
+        "缺口": issues,
+        "缺口类型": gap_types,
+        "缺口未清": diff > 0,
         "事件数": len(events),
         "事件序号": seq_values,
         "序号连续": dense_seq_ok,
@@ -436,10 +483,12 @@ def repair_release(conn, release_id: int) -> dict:
 
 # ---------------------------------------------------------------- 汇总对账
 
-def roster_with_instance_diff(conn) -> list[dict]:
+def roster_with_instance_diff(conn, truth_by_app: dict | None = None) -> list[dict]:
+    """名册与实例对照；附发版单真源旁读，缺口未清的名册行不得当已对齐。"""
     rows = rows_to_list(conn.execute(
         """
-        SELECT a.name AS 应用, e.code AS 环境,
+        SELECT v.app_id AS app_id, v.env_id AS env_id,
+               a.name AS 应用, e.code AS 环境,
                v.version AS 名册版本,
                GROUP_CONCAT(i.version, ',') AS 实例版本们,
                SUM(CASE WHEN i.health='探针红' THEN 1 ELSE 0 END) AS 红灯数,
@@ -452,11 +501,28 @@ def roster_with_instance_diff(conn) -> list[dict]:
         ORDER BY a.id, e.sort_order
         """
     ).fetchall())
+    truth_by_app = truth_by_app or {}
     for row in rows:
         versions = {x for x in (row.get("实例版本们") or "").split(",") if x}
         roster = row.get("名册版本") or ""
         row["版本一致"] = bool(roster) and versions == {roster} and (row.get("红灯数") or 0) == 0
         row["名册实例一致"] = row["版本一致"]
+        # 真源旁读：本应用最新在途发版单的状态机环境/目标版本/缺口
+        t = truth_by_app.get(row["app_id"])
+        row["在途单"] = t["编号"] if t else None
+        row["真源环境"] = t["真源环境"] if t else None
+        row["真源目标版本"] = t["目标版本"] if t else None
+        # 双账：真源当前环境指本格，名册版本却不是真源目标版本
+        row["双账"] = bool(
+            t and t["真源环境"] == row["环境"] and roster != (t["目标版本"] or "")
+        )
+        # 真源缺口未清且正指本格：名册不得当已对齐
+        row["真源缺口未清"] = bool(t and t["真源环境"] == row["环境"] and t["缺口未清"])
+        # 对齐（真源腿）：名册与发版单真源不双账、无未清缺口。
+        # 版本一致是实例腿（历史实例残留另算），不并入真源对齐。
+        row["对齐"] = bool(not row["双账"] and not row["真源缺口未清"])
+        row.pop("app_id", None)
+        row.pop("env_id", None)
     return rows
 
 
@@ -464,6 +530,28 @@ def build_reconcile(conn) -> dict:
     indexes = env_index(conn)
     raw = conn.execute("SELECT * FROM releases ORDER BY id").fetchall()
     details = [analyze_release(conn, r, indexes) for r in raw]
+
+    app_names = {
+        row["id"]: row["name"]
+        for row in conn.execute("SELECT id, name FROM apps").fetchall()
+    }
+    by_id = {r["id"]: r for r in raw}
+    for d in details:
+        d["应用"] = app_names.get(d["应用编号"])
+        d["目标版本"] = by_id[d["编号"]]["target_version"]
+
+    # 每应用最新在途单的真源旁读（名册行据此对齐，缺口未清不得当已对齐）
+    truth_by_app: dict[int, dict] = {}
+    for d in details:
+        r = by_id[d["编号"]]
+        if r["status"] not in ("已入闸", "晋升中", "已放行", "回滚中"):
+            continue
+        truth_by_app[r["app_id"]] = {
+            "编号": d["编号"],
+            "真源环境": d["真源环境"],
+            "目标版本": r["target_version"],
+            "缺口未清": d["缺口未清"],
+        }
 
     flat_issues: list[dict] = []
     for d in details:
@@ -476,12 +564,32 @@ def build_reconcile(conn) -> dict:
             flat_issues.append(item)
 
     total = sum(d["差额"] for d in details)
+    gaps = [
+        {
+            "编号": d["编号"],
+            "发版单号": d["发版单号"],
+            "应用": d.get("应用"),
+            "真源状态": d["真源状态"],
+            "真源环境": d["真源环境"],
+            "重放环境": d["重放环境"],
+            "环境链": d["环境链"],
+            "差额": d["差额"],
+            "缺口类型": d["缺口类型"],
+            "假已放行": d["假已放行"],
+        }
+        for d in details
+        if d["缺口未清"]
+    ]
+    lamp_valid_count = sum(1 for d in details if d["放行成立"])
+    lamp_fake_count = sum(1 for d in details if d["假已放行"])
 
     release_stats = {
         "申请数": conn.execute("SELECT COUNT(*) AS c FROM releases").fetchone()["c"],
         "已放行": conn.execute(
             "SELECT COUNT(*) AS c FROM releases WHERE status='已放行'"
         ).fetchone()["c"],
+        "放行成立": lamp_valid_count,
+        "假已放行": lamp_fake_count,
         "已回滚": conn.execute(
             "SELECT COUNT(*) AS c FROM releases WHERE status='已回滚'"
         ).fetchone()["c"],
@@ -496,8 +604,9 @@ def build_reconcile(conn) -> dict:
     valid_count = conn.execute(
         "SELECT COUNT(*) AS c FROM promote_events WHERE COALESCE(superseded,0)=0"
     ).fetchone()["c"]
-    roster_rows = roster_with_instance_diff(conn)
+    roster_rows = roster_with_instance_diff(conn, truth_by_app)
     roster_instance_diff = sum(0 if r["版本一致"] else 1 for r in roster_rows)
+    roster_truth_diff = sum(0 if r["对齐"] else 1 for r in roster_rows)
 
     return {
         "真源": "发版单状态机",
@@ -512,6 +621,10 @@ def build_reconcile(conn) -> dict:
         "差异明细": flat_issues,
         "差额明细": flat_issues,
         "差异列表": flat_issues,
+        "缺口": gaps,
+        "缺口数": len(gaps),
+        "缺口未清": len(gaps) > 0,
+        "假已放行数": lamp_fake_count,
         "差额": total,
         "差异数": total,
         "异常数": total,
@@ -520,6 +633,7 @@ def build_reconcile(conn) -> dict:
         "平账": total == 0,
         "对账结果": "平" if total == 0 else "不平",
         "名册实例差额": roster_instance_diff,
+        "名册真源差额": roster_truth_diff,
     }
 
 
@@ -543,4 +657,57 @@ def release_detail(conn, release_id: int) -> dict:
     d["差异"] = a["差异"]
     d["异常"] = a["差异"]
     d["真源"] = "发版单状态机"
+
+    # ---- 已放行灯 × 事件环境链 同屏对读证据 ------------------------------
+    # 灯面（单态名义）、环境链（事件重放）、名册旁读、审计痕迹同屏开出，
+    # 灯亮但证据未同指时缺口钉死在详情负载里，任何读面都绕不开。
+    d["环境链"] = a["环境链"]
+    d["重放链"] = a["重放链"]
+    d["基线环境"] = a["基线环境"]
+    d["事件数"] = a["事件数"]
+    d["事件序号"] = a["事件序号"]
+    d["序号连续"] = a["序号连续"]
+    d["名册版本"] = a["名册版本"]
+    d["是否已放行"] = a["是否已放行"]
+    d["已放行"] = a["已放行"]
+    d["已放行灯"] = a["已放行灯"]
+    d["放行成立"] = a["放行成立"]
+    d["假已放行"] = a["假已放行"]
+    d["缺口"] = a["缺口"]
+    d["缺口类型"] = a["缺口类型"]
+    d["缺口未清"] = a["缺口未清"]
+
+    # 跨环旁读：本应用各环境名册版本
+    roster_rows = conn.execute(
+        """
+        SELECT e.code AS 环境, e.name AS 环境名, v.version AS 版本, v.updated_at AS 更新时间
+        FROM app_env_versions v JOIN environments e ON e.id = v.env_id
+        WHERE v.app_id=? ORDER BY e.sort_order
+        """,
+        (raw["app_id"],),
+    ).fetchall()
+    d["名册旁读"] = rows_to_list(roster_rows)
+    d["各环境名册"] = {r["环境"]: r["版本"] for r in d["名册旁读"]}
+
+    # 挂接行：挂在该单下的实例投影
+    d["挂接实例"] = rows_to_list(conn.execute(
+        """
+        SELECT i.id AS 编号, e.code AS 环境, e.name AS 环境名, i.version AS 版本,
+               i.health AS 健康, i.updated_at AS 更新时间
+        FROM instances i JOIN environments e ON e.id = i.env_id
+        WHERE i.release_id=? ORDER BY e.sort_order, i.id
+        """,
+        (release_id,),
+    ).fetchall())
+
+    # 审计腿：本单审计流水（重放已放行灯的第四条证据）
+    d["审计"] = rows_to_list(conn.execute(
+        """
+        SELECT id AS 编号, kind AS 类别, ref_id AS 关联编号,
+               action AS 动作, created_at AS 时间, note AS 备注
+        FROM audit_events WHERE ref_id=? ORDER BY id DESC LIMIT 50
+        """,
+        (release_id,),
+    ).fetchall())
+    d["审计放行证据"] = a["已放行灯"]["证据"]["审计放行证据"]
     return d

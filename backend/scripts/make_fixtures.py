@@ -98,11 +98,13 @@ def build() -> None:
     rep = c.get("/api/对账").json()
     print(f"夹具库已生成：{path}")
     print(f"发版单：平账#{healthy} 缺事件#{missing} 越位#{stray} 半截#{half} 名册#{roster}")
-    print(f"对账差额={rep['差额']} 一致={rep['一致']}")
+    print(f"对账差额={rep['差额']} 一致={rep['一致']} 假已放行数={rep['假已放行数']} 缺口数={rep['缺口数']}")
     for d in rep["对账明细"]:
         if d["差额"]:
+            lamp = d["已放行灯"]
             print(f"  #{d['编号']} {d['发版单号']} 差额{d['差额']} "
-                  f"{[i['类型'] for i in d['差异']]}")
+                  f"{[i['类型'] for i in d['差异']]} 灯亮={lamp['亮']} 成立={lamp['成立']}")
+    print("对照面：GET /api/晋升事件/对照（每单链×单态×灯）、GET /api/总览（分布格缺口数）。")
     print("调用 POST /api/对账/纠偏 可一键收敛到发版单状态机真源。")
 
 

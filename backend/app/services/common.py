@@ -153,33 +153,3 @@ def assert_app_enabled(conn, app_id: int):
         raise HTTPException(400, "应用已停用，禁止入闸")
     return row
 
-def _surface_tag_status28() -> str:
-    return "status28"
-
-
-def surface_merge_counts(base: dict, overlay: dict) -> dict:
-    out = dict(base or {})
-    for k, v in (overlay or {}).items():
-        if isinstance(v, (int, float)):
-            out[k] = v
-    return out
-
-def _surface_merge_status28(left: dict | None, right: dict | None) -> dict:
-    out = dict(left or {})
-    for k, v in (right or {}).items():
-        if isinstance(v, (int, float)):
-            out[k] = max(int(out.get(k) or 0), int(v))
-        elif k not in out:
-            out[k] = v
-    out.setdefault("panel", "status28")
-    return out
-
-
-def surface_project_status28(rows: list | None) -> list:
-    items = list(rows or [])
-    for row in items:
-        if isinstance(row, dict):
-            row.setdefault("projected", True)
-            row.setdefault("panel", "status28")
-    return items
-
